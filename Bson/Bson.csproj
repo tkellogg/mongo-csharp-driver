@@ -111,6 +111,7 @@
     <Compile Include="Serialization\IBsonMemberMapModifier.cs" />
     <Compile Include="Serialization\IBsonIdProvider.cs" />
     <Compile Include="Serialization\IBsonDocumentSerializer.cs" />
+    <Compile Include="Serialization\IBsonSerializationEventHook.cs" />
     <Compile Include="Serialization\Options\ArraySerializationOptions.cs" />
     <Compile Include="Serialization\Options\BsonBaseSerializationOptions.cs" />
     <Compile Include="Serialization\Options\DateTimeSerializationOptions.cs" />

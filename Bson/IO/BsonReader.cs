@@ -32,6 +32,7 @@ namespace MongoDB.Bson.IO
         private BsonReaderState _state;
         private BsonType _currentBsonType;
         private string _currentName;
+        private Stack<int> _versions = new Stack<int>();
 
         // constructors
         /// <summary>
@@ -798,6 +799,28 @@ namespace MongoDB.Bson.IO
                     expectedName, actualName);
                 throw new FileFormatException(message);
             }
+        }
+
+        /// <summary>
+        /// Gets or sets the version of the current document. 
+        /// </summary>
+        public int? DocumentVersion
+        {
+            get { return _versions.Any() ? (int?) _versions.Peek() : null; }
+            set
+            {
+                if (value != null) 
+                    _versions.Push(value.Value);
+            }
+        }
+
+        /// <summary>
+        /// Every call to set_DocumentVersion should have a corresponding call
+        /// to this method after processing the document.
+        /// </summary>
+        public void UnsetDocumentVersion()
+        {
+            _versions.Pop();
         }
     }
 }

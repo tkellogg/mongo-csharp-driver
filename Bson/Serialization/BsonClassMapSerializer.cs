@@ -141,6 +141,13 @@ namespace MongoDB.Bson.Serialization
 
                 bsonReader.ReadStartDocument();
                 var elementTrie = _classMap.ElementTrie;
+                var shouldUnsetDocumentVersion = false;
+                IBsonSerializerEventHookContext eventHookContext = null;
+                var canRecoverData = SerializerSelection.Current.CanRecoverData(nominalType, bsonReader.DocumentVersion);
+                if (canRecoverData)
+                {
+                    eventHookContext = SerializerSelection.Current.CreateContext(actualType);
+                }
                 bool memberMapFound;
                 int memberMapIndex;
                 while (bsonReader.ReadBsonType(elementTrie, out memberMapFound, out memberMapIndex) != BsonType.EndOfDocument)
@@ -148,6 +155,8 @@ namespace MongoDB.Bson.Serialization
                     var elementName = bsonReader.ReadName();
                     if (memberMapFound)
                     {
+                        ReadVersionElement(bsonReader, elementName, ref shouldUnsetDocumentVersion);
+
                         var memberMap = allMemberMaps[memberMapIndex];
                         if (memberMapIndex != extraElementsMemberMapIndex)
                         {
@@ -174,10 +183,17 @@ namespace MongoDB.Bson.Serialization
                             continue;
                         }
 
+                        if (ReadVersionElement(bsonReader, elementName, ref shouldUnsetDocumentVersion)) continue;
+
                         if (extraElementsMemberMapIndex >= 0)
                         {
                             DeserializeExtraElement(bsonReader, obj, elementName, _classMap.ExtraElementsMemberMap);
                             memberMapBitArray[extraElementsMemberMapIndex >> 5] |= 1U << (extraElementsMemberMapIndex & 31);
+                        }
+                        else if (eventHookContext != null)
+                        {
+                            var memberMap = eventHookContext.GetExtraElementsMap(elementName);
+                            DeserializeExtraElement(bsonReader, eventHookContext.ExtraElementsHost, elementName, memberMap);
                         }
                         else if (_classMap.IgnoreExtraElements)
                         {
@@ -193,6 +209,12 @@ namespace MongoDB.Bson.Serialization
                     }
                 }
                 bsonReader.ReadEndDocument();
+
+                if (eventHookContext != null)
+                {
+                    SerializerSelection.Current.ProcessExtraElements(obj, eventHookContext, bsonReader.DocumentVersion ?? 0);
+                }
+                if (shouldUnsetDocumentVersion) bsonReader.UnsetDocumentVersion();
 
                 // check any members left over that we didn't have elements for (in blocks of 32 elements at a time)
                 for (var bitArrayIndex = 0; bitArrayIndex < memberMapBitArray.Length; ++bitArrayIndex)
@@ -242,6 +264,25 @@ namespace MongoDB.Bson.Serialization
 
                 return obj;
             }
+        }
+
+        private class UnaccountedMembers
+        {
+            public BsonDocument ExtraMembers { get; set; }
+        }
+
+        private static bool ReadVersionElement(BsonReader bsonReader, string elementName,
+                                                       ref bool shouldUnsetDocumentVersion)
+        {
+            if (elementName == "_version")
+            {
+                var version = bsonReader.ReadInt32();
+                bsonReader.DocumentVersion = version;
+                shouldUnsetDocumentVersion = true;
+                return true;
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -484,9 +525,15 @@ namespace MongoDB.Bson.Serialization
                     var discriminatorConvention = memberMap.GetDiscriminatorConvention();
                     actualType = discriminatorConvention.GetActualType(bsonReader, nominalType); // returns nominalType if no discriminator found
                 }
-                var serializer = memberMap.GetSerializer(actualType);
+                var selection = SerializerSelection.Current.SelectElementDeserializer(memberMap, actualType, bsonReader.DocumentVersion);
+                var serializer = selection.Serializer;
+                if (selection.ActualType != null)
+                {
+                    actualType = selection.ActualType;
+                    nominalType = selection.ActualType; // trick it into thinking we actually want to deserialize what we say
+                }
                 var value = serializer.Deserialize(bsonReader, nominalType, actualType, memberMap.SerializationOptions);
-                memberMap.Setter(obj, value);
+                selection.AssignValueToParentObject(obj, value);
             }
             catch (Exception ex)
             {
