@@ -11,10 +11,12 @@ namespace MongoDB.Bson.Serialization
     public interface IBsonSerializationEventHook
     {
         /// <summary>
-        /// Initialize state data for the current document. Each sub-document gets it's own state.
+        /// Initialize state data for the current document. Each sub-document gets it's own state. The 
+        /// interface as it stands is a bit hacky. It could probably be easier with some more significant
+        /// changes to the driver.
         /// </summary>
         /// <param name="actualType"></param>
-        /// <returns></returns>
+        /// <returns>An object that can hold state. Can't be null.</returns>
         IBsonSerializerEventHookContext CreateContext(Type actualType);
 
         /// <summary>
@@ -44,11 +46,12 @@ namespace MongoDB.Bson.Serialization
         void ProcessExtraElements(object constructedObject, IBsonSerializerEventHookContext context, int version);
 
         /// <summary>
-        /// Indicates that this event hook knows what to do with extra elements for the given type.
+        /// Indicates that this object (the migrations framework) knows how to migrate this type. If it returns false,
+        /// none of the other methods should be called.
         /// </summary>
         /// <param name="nominalType"></param>
         /// <param name="documentVersion"></param>
-        /// <returns></returns>
+        /// <returns><c>true</c> if this framework can migrate this object, otherwise <c>false</c>.</returns>
         bool CanRecoverData(Type nominalType, int? documentVersion);
     }
 
@@ -126,21 +129,39 @@ namespace MongoDB.Bson.Serialization
 
         static SerializerSelection()
         {
-            Current = new DefaultSerializationEventHook();
+            Current = new EmptySerializationEventHook();
         }
     }
 
-    internal class DefaultSerializationEventHook : IBsonSerializationEventHook
+    /// <summary>
+    /// Default implementation that does a NO OP.
+    /// </summary>
+    internal class EmptySerializationEventHook : IBsonSerializationEventHook
     {
+        private static BsonClassMap __classMap;
+
         public IBsonSerializerEventHookContext CreateContext(Type actualType)
         {
-            if (!BsonClassMap.IsClassMapRegistered(typeof(EventContext)))
-            {
-                BsonClassMap.RegisterClassMap<EventContext>();
-            }
-            var classMap = BsonClassMap.LookupClassMap(typeof (EventContext));
             var memberInfo = typeof (EventContext).GetProperty("ExtraMembers");
-            return new EventContext(new BsonMemberMap(classMap, memberInfo));
+            return new EventContext(new BsonMemberMap(EventContextClassMap, memberInfo));
+        }
+
+        private static BsonClassMap EventContextClassMap
+        {
+            get
+            {
+                // BsonClassMap isn't thread-safe, so this is probably bad code
+                if (__classMap == null)
+                {
+                    // probably not the best place to register a classmap
+                    if (!BsonClassMap.IsClassMapRegistered(typeof (EventContext)))
+                    {
+                        BsonClassMap.RegisterClassMap<EventContext>();
+                    }
+                    __classMap = BsonClassMap.LookupClassMap(typeof (EventContext));
+                }
+                return __classMap;
+            }
         }
 
         public SerializerSelection SelectElementDeserializer(BsonMemberMap memberMap, Type actualType, int? documentVersion)
@@ -157,6 +178,7 @@ namespace MongoDB.Bson.Serialization
             return false;
         }
 
+        /// <summary>Default implementation that does a NOOP.</summary>
         class EventContext : IBsonSerializerEventHookContext
         {
             private readonly BsonMemberMap _memberMap;
@@ -177,14 +199,22 @@ namespace MongoDB.Bson.Serialization
     }
 
     /// <summary>
-    /// State data for accruing extra elements in the format that the implementor requires.
+    /// State data for accruing extra elements in the format that the implementor requires. This is
+    /// used to manipulate the deserializer into putting the unfound property value into
+    /// a place that we can easily get to, without obfuscating the model. This process could 
+    /// feel less hacky with larger changes to the driver.
     /// </summary>
     public interface IBsonSerializerEventHookContext
     {
-        /// <summary></summary>
+        /// <summary>
+        /// Get the member map that locates the property where the extra elements should be 
+        /// deserialized to.
+        /// </summary>
         BsonMemberMap GetExtraElementsMap(string elementName);
 
-        /// <summary></summary>
+        /// <summary>
+        /// The object for which the member map is for (<c>GetExtraElementsMap</c>).
+        /// </summary>
         object ExtraElementsHost { get; }
     }
 }
